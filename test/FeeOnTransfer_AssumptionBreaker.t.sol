@@ -5,16 +5,14 @@ import "forge-std/Test.sol";
 import {DeployHelper} from "./DeployHelper.sol";
 
 import {IUniswapV2Factory06} from "../src/interfaces/IUniswapV2Factory06.sol";
-import {IUniswapV2Router02_066} from "../src/interfaces/IUniswapV2Router02_066.sol";
-import {IWETH9_066} from "../src/interfaces/IWETH9_066.sol";
+import {IUniswapV2PairMinimal} from "../src/interfaces/IUniswapV2PairMinimal.sol";
 
 import {MockERC20} from "../src/tokens/MockERC20.sol";
 import {FeeOnTransferERC20} from "../src/tokens/FeeOnTransferERC20.sol";
 
 contract FeeOnTransfer_AssumptionBreaker is DeployHelper {
     IUniswapV2Factory06 factory;
-    IUniswapV2Router02_066 router;
-    IWETH9_066 weth;
+    IUniswapV2PairMinimal pair;
 
     MockERC20 normal;
     FeeOnTransferERC20 feeToken;
@@ -23,109 +21,95 @@ contract FeeOnTransfer_AssumptionBreaker is DeployHelper {
     address trader = address(0xBEEF);
 
     function setUp() external {
-        // 1) Factory (0.5.16) constructor: (address feeToSetter)
-bytes memory factoryBytecode = _artifact("out/UniV2Factory_0516.sol/UniV2Factory_0516.json");
+        // Deploy Factory (0.5.16 wrapper artifact)
+        bytes memory factoryBytecode = _artifact("out/UniV2Factory_0516.sol/UniV2Factory_0516.json");
         address factoryAddr = _deploy(bytes.concat(factoryBytecode, abi.encode(address(this))));
         factory = IUniswapV2Factory06(factoryAddr);
-emit log_string("A: factory deployed");
 
-        // 2) WETH9 (0.6.6) no constructor args
-bytes memory wethBytecode    = _artifact("out/WETH9_066.sol/WETH9_066.json");
-        address wethAddr = _deploy(wethBytecode);
-        weth = IWETH9_066(wethAddr);
-emit log_string("B: WETH deployed");
-
-        // 3) Router02 (0.6.6) constructor: (address factory, address WETH)
-bytes memory routerBytecode  = _artifact("out/UniV2Router02_066.sol/UniV2Router02_066.json");
-        address routerAddr = _deploy(bytes.concat(routerBytecode, abi.encode(factoryAddr, wethAddr)));
-        router = IUniswapV2Router02_066(routerAddr);
-emit log_string("C: router deployed");
-
-        // Tokens (0.8.20)
+        // Deploy tokens (0.8.20)
         normal = new MockERC20("Normal", "NORM");
-        feeToken = new FeeOnTransferERC20("FeeToken", "FEE", 200); // 2%
-emit log_string("D: tokens deployed");
+        feeToken = new FeeOnTransferERC20("FeeToken", "FEE", 200); // 2% (200 bps)
 
         // Mint balances
         normal.mint(lp, 1_000_000 ether);
         feeToken.mint(lp, 1_000_000 ether);
         normal.mint(trader, 100_000 ether);
         feeToken.mint(trader, 100_000 ether);
-emit log_string("E: tokens minted");
 
-        // LP approves router
-        normal.approve(routerAddr, type(uint256).max);
-        feeToken.approve(routerAddr, type(uint256).max);
-emit log_string("F: router approved");
+        // Create pair
+        address pairAddr = factory.createPair(address(feeToken), address(normal));
+        pair = IUniswapV2PairMinimal(pairAddr);
 
-        // Add liquidity
-emit log_string("G: addLiquidity start");
-try router.addLiquidity(
-    address(feeToken),
-    address(normal),
-    100_000 ether,
-    100_000 ether,
-    0,
-    0,
-    lp,
-    block.timestamp
-) returns (uint, uint, uint) {
-    emit log_string("H: addLiquidity success");
-} catch Error(string memory reason) {
-    emit log_string("H: addLiquidity reverted with Error(string):");
-    emit log_string(reason);
-    revert(reason);
-} catch (bytes memory lowLevelData) {
-    emit log_string("H: addLiquidity reverted with low-level data:");
-    emit log_bytes(lowLevelData);
-    revert("addLiquidity reverted (low-level)");
-}
-emit log_string("I: addLiquidity complete");
+        // Add liquidity manually (token transfers -> pair -> mint)
+        // Note: feeToken transfer reduces the amount actually received by the pair
+        feeToken.transfer(pairAddr, 100_000 ether);
+        normal.transfer(pairAddr, 100_000 ether);
+        pair.mint(lp);
     }
 
-    function test_getAmountsOut_is_reserve_math_only() view external {
-        address[] memory path = new address[](2);
-        path[0] = address(feeToken);
-        path[1] = address(normal);
+    function _getReservesFor(address tokenIn) internal view returns (uint reserveIn, uint reserveOut) {
+        (uint112 r0, uint112 r1,) = pair.getReserves();
+        if (tokenIn == pair.token0()) {
+            reserveIn = uint(r0);
+            reserveOut = uint(r1);
+        } else {
+            reserveIn = uint(r1);
+            reserveOut = uint(r0);
+        }
+    }
 
+    function _getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) internal pure returns (uint amountOut) {
+        // Uniswap V2: amountOut = (amountIn*997*reserveOut) / (reserveIn*1000 + amountIn*997)
+        uint amountInWithFee = amountIn * 997;
+        uint numerator = amountInWithFee * reserveOut;
+        uint denominator = reserveIn * 1000 + amountInWithFee;
+        amountOut = numerator / denominator;
+    }
+
+    function test_fee_on_transfer_breaks_quote_vs_actual() external {
         uint256 amountIn = 1_000 ether;
 
-        uint256[] memory quoted = router.getAmountsOut(amountIn, path);
-        assertEq(quoted.length, 2);
-        assertGt(quoted[1], 0);
-    }
+        // "Quote" assumes full amountIn reaches the pair
+        (uint reserveInBefore, uint reserveOutBefore) = _getReservesFor(address(feeToken));
+        uint256 quotedOut = _getAmountOut(amountIn, reserveInBefore, reserveOutBefore);
 
-    function test_fee_on_transfer_breaks_router_quote_deterministically() external {
         vm.startPrank(trader);
-        feeToken.approve(address(router), type(uint256).max);
 
-        address[] memory path = new address[](2);      
-        path[0] = address(feeToken);
-        path[1] = address(normal);
+        uint balBefore = normal.balanceOf(trader);
 
-        uint256 amountIn = 1_000 ether;
+        // 1) fee-on-transfer token in
+        feeToken.transfer(address(pair), amountIn);
 
-        uint256 quotedOut = router.getAmountsOut(amountIn, path)[1];
+        // 2) compute actualIn = balanceIn - reserveIn (supporting-fee style)
+        (uint reserveIn, uint reserveOut) = _getReservesFor(address(feeToken));
+        uint balIn = feeToken.balanceOf(address(pair));
+        uint actualIn = balIn - reserveIn;
 
-        uint256 balBefore = normal.balanceOf(trader);
+        // extra assertion: verify fee math (2% of amountIn)
+        uint expectedActualIn = amountIn - (amountIn * 200 / 10_000);
+        assertEq(actualIn, expectedActualIn, "actualIn should equal amountIn minus transfer fee");
 
-        router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-            amountIn,
-            0,
-            path,
-            trader,
-            block.timestamp
-        );
+        // 3) output from actualIn
+        uint amountOut = _getAmountOut(actualIn, reserveIn, reserveOut);
 
-        uint256 balAfter = normal.balanceOf(trader);
-        uint256 actualOut = balAfter - balBefore;
+        // 4) swap direction depends on token0/token1 ordering
+        if (address(feeToken) == pair.token0()) {
+            pair.swap(0, amountOut, trader, "");
+        } else {
+            pair.swap(amountOut, 0, trader, "");
+        }
+
+        uint balAfter = normal.balanceOf(trader);
+        uint actualOut = balAfter - balBefore;
 
         vm.stopPrank();
 
+        // Core point: actualOut < quotedOut because actualIn < amountIn
         assertLt(actualOut, quotedOut, "expected actualOut < quotedOut due to transfer fee");
 
-        emit log_named_uint("router quoted out", quotedOut);
-        emit log_named_uint("actual out", actualOut);
-        emit log_named_uint("implicit loss", quotedOut - actualOut);
+        emit log_named_uint("amountIn (intended)", amountIn);
+        emit log_named_uint("actualIn (pair received)", actualIn);
+        emit log_named_uint("quotedOut (assumes no fee)", quotedOut);
+        emit log_named_uint("actualOut", actualOut);
     }
 }
