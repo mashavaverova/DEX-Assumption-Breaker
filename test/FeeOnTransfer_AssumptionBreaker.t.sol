@@ -70,27 +70,31 @@ contract FeeOnTransfer_AssumptionBreaker is DeployHelper {
     // =============================================================
 
     /// @dev Reserves from the perspective of tokenIn -> tokenOut (based on token0 ordering).
-    function _getReservesFor(address tokenIn) internal view returns (uint reserveIn, uint reserveOut) {
+    function _getReservesFor(address tokenIn) internal view returns (uint256 reserveIn, uint256 reserveOut) {
         (uint112 r0, uint112 r1,) = pair.getReserves();
         if (tokenIn == pair.token0()) {
-            reserveIn = uint(r0);
-            reserveOut = uint(r1);
+            reserveIn = uint256(r0);
+            reserveOut = uint256(r1);
         } else {
-            reserveIn = uint(r1);
-            reserveOut = uint(r0);
+            reserveIn = uint256(r1);
+            reserveOut = uint256(r0);
         }
     }
 
     /// @dev Uniswap V2 amountOut math (0.3% fee): amountOut = (amountIn*997*reserveOut) / (reserveIn*1000 + amountIn*997)
-    function _getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) internal pure returns (uint amountOut) {
-        uint amountInWithFee = amountIn * 997;
-        uint numerator = amountInWithFee * reserveOut;
-        uint denominator = reserveIn * 1000 + amountInWithFee;
+    function _getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut)
+        internal
+        pure
+        returns (uint256 amountOut)
+    {
+        uint256 amountInWithFee = amountIn * 997;
+        uint256 numerator = amountInWithFee * reserveOut;
+        uint256 denominator = reserveIn * 1000 + amountInWithFee;
         amountOut = numerator / denominator;
     }
 
     /// @dev Reads ERC20 balances for token0/token1 held by the pair.
-    function _pairBalances() internal view returns (uint bal0, uint bal1) {
+    function _pairBalances() internal view returns (uint256 bal0, uint256 bal1) {
         bal0 = IERC20Minimal(pair.token0()).balanceOf(address(pair));
         bal1 = IERC20Minimal(pair.token1()).balanceOf(address(pair));
     }
@@ -102,18 +106,15 @@ contract FeeOnTransfer_AssumptionBreaker is DeployHelper {
 
     /// @dev Performs a swap in the "supporting fee-on-transfer" style and returns:
     ///      (actualIn received by pair, amountOut sent to trader).
-    function _swapSupportingFeeOnTransfer(uint256 amountIn)
-        internal
-        returns (uint256 actualIn, uint256 amountOut)
-    {
-        uint balBefore = normal.balanceOf(trader);
+    function _swapSupportingFeeOnTransfer(uint256 amountIn) internal returns (uint256 actualIn, uint256 amountOut) {
+        uint256 balBefore = normal.balanceOf(trader);
 
         // 1) transfer input to pair (fee applies here)
         feeToken.transfer(address(pair), amountIn);
 
         // 2) actualIn = balanceIn - reserveIn
-        (uint reserveIn, uint reserveOut) = _getReservesFor(address(feeToken));
-        uint balIn = feeToken.balanceOf(address(pair));
+        (uint256 reserveIn, uint256 reserveOut) = _getReservesFor(address(feeToken));
+        uint256 balIn = feeToken.balanceOf(address(pair));
         actualIn = balIn - reserveIn;
 
         // 3) compute output from actualIn
@@ -127,8 +128,8 @@ contract FeeOnTransfer_AssumptionBreaker is DeployHelper {
         }
 
         // sanity: output actually arrived
-        uint balAfter = normal.balanceOf(trader);
-        uint actualOut = balAfter - balBefore;
+        uint256 balAfter = normal.balanceOf(trader);
+        uint256 actualOut = balAfter - balBefore;
         assertEq(actualOut, amountOut, "unexpected: actualOut != amountOut");
     }
 
@@ -152,14 +153,14 @@ contract FeeOnTransfer_AssumptionBreaker is DeployHelper {
 
         vm.startPrank(trader);
 
-        (uint reserveIn,) = _getReservesFor(address(feeToken));
+        (uint256 reserveIn,) = _getReservesFor(address(feeToken));
 
         feeToken.transfer(address(pair), amountIn);
 
-        uint balIn = feeToken.balanceOf(address(pair));
-        uint actualIn = balIn - reserveIn;
+        uint256 balIn = feeToken.balanceOf(address(pair));
+        uint256 actualIn = balIn - reserveIn;
 
-        uint expected = _actualInIfTransfer(amountIn);
+        uint256 expected = _actualInIfTransfer(amountIn);
         assertEq(actualIn, expected, "actualIn should match fee math");
 
         vm.stopPrank();
@@ -168,7 +169,7 @@ contract FeeOnTransfer_AssumptionBreaker is DeployHelper {
     function test_quote_assumption_breaks_actualOut_is_lower() external {
         uint256 amountIn = 1_000 ether;
 
-        (uint reserveInBefore, uint reserveOutBefore) = _getReservesFor(address(feeToken));
+        (uint256 reserveInBefore, uint256 reserveOutBefore) = _getReservesFor(address(feeToken));
         uint256 quotedOut = _getAmountOut(amountIn, reserveInBefore, reserveOutBefore);
 
         vm.startPrank(trader);
@@ -181,13 +182,13 @@ contract FeeOnTransfer_AssumptionBreaker is DeployHelper {
     function test_reserves_update_after_swap_sanity() external {
         uint256 amountIn = 1_000 ether;
 
-        (uint rIn0, uint rOut0) = _getReservesFor(address(feeToken));
+        (uint256 rIn0, uint256 rOut0) = _getReservesFor(address(feeToken));
 
         vm.startPrank(trader);
-        (uint actualIn, uint amountOut) = _swapSupportingFeeOnTransfer(amountIn);
+        (uint256 actualIn, uint256 amountOut) = _swapSupportingFeeOnTransfer(amountIn);
         vm.stopPrank();
 
-        (uint rIn1, uint rOut1) = _getReservesFor(address(feeToken));
+        (uint256 rIn1, uint256 rOut1) = _getReservesFor(address(feeToken));
 
         assertEq(rIn1, rIn0 + actualIn, "reserveIn did not increase by actualIn");
         assertEq(rOut1, rOut0 - amountOut, "reserveOut did not decrease by amountOut");
@@ -212,29 +213,29 @@ contract FeeOnTransfer_AssumptionBreaker is DeployHelper {
         uint256 amountIn = 1_000 ether;
 
         (uint112 r0, uint112 r1,) = pair2.getReserves();
-        uint reserveIn;
-        uint reserveOut;
+        uint256 reserveIn;
+        uint256 reserveOut;
         if (address(noFee) == pair2.token0()) {
-            reserveIn = uint(r0);
-            reserveOut = uint(r1);
+            reserveIn = uint256(r0);
+            reserveOut = uint256(r1);
         } else {
-            reserveIn = uint(r1);
-            reserveOut = uint(r0);
+            reserveIn = uint256(r1);
+            reserveOut = uint256(r0);
         }
 
         uint256 quotedOut = _getAmountOut(amountIn, reserveIn, reserveOut);
 
         vm.startPrank(trader);
 
-        uint balBefore = normal.balanceOf(trader);
+        uint256 balBefore = normal.balanceOf(trader);
 
         noFee.transfer(address(pair2), amountIn);
 
-        uint balIn = noFee.balanceOf(address(pair2));
-        uint actualIn = balIn - reserveIn;
+        uint256 balIn = noFee.balanceOf(address(pair2));
+        uint256 actualIn = balIn - reserveIn;
         assertEq(actualIn, amountIn, "control: actualIn should equal amountIn");
 
-        uint amountOut = _getAmountOut(actualIn, reserveIn, reserveOut);
+        uint256 amountOut = _getAmountOut(actualIn, reserveIn, reserveOut);
 
         if (address(noFee) == pair2.token0()) {
             pair2.swap(0, amountOut, trader, "");
@@ -242,8 +243,8 @@ contract FeeOnTransfer_AssumptionBreaker is DeployHelper {
             pair2.swap(amountOut, 0, trader, "");
         }
 
-        uint balAfter = normal.balanceOf(trader);
-        uint actualOut = balAfter - balBefore;
+        uint256 balAfter = normal.balanceOf(trader);
+        uint256 actualOut = balAfter - balBefore;
 
         vm.stopPrank();
 
@@ -256,25 +257,23 @@ contract FeeOnTransfer_AssumptionBreaker is DeployHelper {
 
     function test_donation_to_pair_makes_balance_diff_from_reserves() external {
         (uint112 r0Before, uint112 r1Before,) = pair.getReserves();
-        (uint b0Before, uint b1Before) = _pairBalances();
+        (uint256 b0Before, uint256 b1Before) = _pairBalances();
 
-        uint gapBefore =
-            (b0Before > uint(r0Before) ? b0Before - uint(r0Before) : uint(r0Before) - b0Before) +
-            (b1Before > uint(r1Before) ? b1Before - uint(r1Before) : uint(r1Before) - b1Before);
+        uint256 gapBefore = (b0Before > uint256(r0Before) ? b0Before - uint256(r0Before) : uint256(r0Before) - b0Before)
+            + (b1Before > uint256(r1Before) ? b1Before - uint256(r1Before) : uint256(r1Before) - b1Before);
 
         // donate NORMAL token (avoid fee noise)
         normal.transfer(address(pair), 123 ether);
 
         (uint112 r0After, uint112 r1After,) = pair.getReserves();
-        (uint b0After, uint b1After) = _pairBalances();
+        (uint256 b0After, uint256 b1After) = _pairBalances();
 
         // reserves unchanged after a plain transfer
-        assertEq(uint(r0After), uint(r0Before), "reserve0 should not change on donation");
-        assertEq(uint(r1After), uint(r1Before), "reserve1 should not change on donation");
+        assertEq(uint256(r0After), uint256(r0Before), "reserve0 should not change on donation");
+        assertEq(uint256(r1After), uint256(r1Before), "reserve1 should not change on donation");
 
-        uint gapAfter =
-            (b0After > uint(r0After) ? b0After - uint(r0After) : uint(r0After) - b0After) +
-            (b1After > uint(r1After) ? b1After - uint(r1After) : uint(r1After) - b1After);
+        uint256 gapAfter = (b0After > uint256(r0After) ? b0After - uint256(r0After) : uint256(r0After) - b0After)
+            + (b1After > uint256(r1After) ? b1After - uint256(r1After) : uint256(r1After) - b1After);
 
         assertGt(gapAfter, gapBefore, "donation should increase balance/reserve mismatch");
 
@@ -287,12 +286,12 @@ contract FeeOnTransfer_AssumptionBreaker is DeployHelper {
 
         normal.transfer(address(pair), 123 ether);
 
-        uint beforeBal = normal.balanceOf(attacker);
+        uint256 beforeBal = normal.balanceOf(attacker);
 
         vm.prank(attacker);
         pair.skim(attacker);
 
-        uint afterBal = normal.balanceOf(attacker);
+        uint256 afterBal = normal.balanceOf(attacker);
 
         assertGt(afterBal, beforeBal, "attacker should receive skimmed tokens");
     }
@@ -305,7 +304,7 @@ contract FeeOnTransfer_AssumptionBreaker is DeployHelper {
         uint256 amountIn = 1_000 ether;
 
         // naive quote assumes full amountIn reaches the pair
-        (uint reserveInBefore, uint reserveOutBefore) = _getReservesFor(address(feeToken));
+        (uint256 reserveInBefore, uint256 reserveOutBefore) = _getReservesFor(address(feeToken));
         uint256 quotedOut = _getAmountOut(amountIn, reserveInBefore, reserveOutBefore);
 
         vm.startPrank(trader);
@@ -314,9 +313,9 @@ contract FeeOnTransfer_AssumptionBreaker is DeployHelper {
         feeToken.transfer(address(pair), amountIn);
 
         // actualIn (what pair really received)
-        (uint reserveIn, uint reserveOut) = _getReservesFor(address(feeToken));
-        uint balIn = feeToken.balanceOf(address(pair));
-        uint actualIn = balIn - reserveIn;
+        (uint256 reserveIn, uint256 reserveOut) = _getReservesFor(address(feeToken));
+        uint256 balIn = feeToken.balanceOf(address(pair));
+        uint256 actualIn = balIn - reserveIn;
 
         // "safe" bound computed from actualIn
         uint256 safeOut = _getAmountOut(actualIn, reserveIn, reserveOut);
@@ -346,7 +345,7 @@ contract FeeOnTransfer_AssumptionBreaker is DeployHelper {
     function testFuzz_quote_is_always_over_optimistic_for_fee_on_transfer(uint256 amountIn) external view {
         amountIn = bound(amountIn, 1e6, 10_000 ether);
 
-        (uint reserveIn, uint reserveOut) = _getReservesFor(address(feeToken));
+        (uint256 reserveIn, uint256 reserveOut) = _getReservesFor(address(feeToken));
 
         uint256 naiveOut = _getAmountOut(amountIn, reserveIn, reserveOut);
 
@@ -357,16 +356,16 @@ contract FeeOnTransfer_AssumptionBreaker is DeployHelper {
     }
 
     function test_monotonicity_larger_input_gives_more_output() external view {
-        (uint reserveIn, uint reserveOut) = _getReservesFor(address(feeToken));
+        (uint256 reserveIn, uint256 reserveOut) = _getReservesFor(address(feeToken));
 
-        uint aIn = 10 ether;
-        uint bIn = 100 ether;
+        uint256 aIn = 10 ether;
+        uint256 bIn = 100 ether;
 
-        uint aActual = _actualInIfTransfer(aIn);
-        uint bActual = _actualInIfTransfer(bIn);
+        uint256 aActual = _actualInIfTransfer(aIn);
+        uint256 bActual = _actualInIfTransfer(bIn);
 
-        uint aOut = _getAmountOut(aActual, reserveIn, reserveOut);
-        uint bOut = _getAmountOut(bActual, reserveIn, reserveOut);
+        uint256 aOut = _getAmountOut(aActual, reserveIn, reserveOut);
+        uint256 bOut = _getAmountOut(bActual, reserveIn, reserveOut);
 
         assertGt(bOut, aOut, "larger input should give larger output");
     }
